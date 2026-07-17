@@ -1,0 +1,120 @@
+# =============================================================================
+# SERVICE REPO — POC PIPELINE (self-contained, runs GREEN without Azure)
+# Repo: mbeema/service-orders
+#
+# build/deploy are DUMMY echoes. release + bump-staging-ledger are REAL:
+#   release            -> real semver git tag + GitHub Release
+#   bump-staging-ledger-> real commit to mbeema/platform-releases (deploy key)
+#
+# The production form (reusable-build/deploy.yml + Azure) lives in
+# mbeema/platform-pipelines. This POC proves the release/ledger flow end to end.
+# =============================================================================
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # release job pushes a tag + creates a GitHub Release
+
+env:
+  SERVICE: orders
+
+jobs:
+  # ---- BUILD ONCE (dummy) ----
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "version=sha-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - run: echo "🔨 [POC] built $SERVICE ${{ steps.v.outputs.version }} — immutable artifact (dummy)"
+
+  # ---- DEPLOY dev/staging (dummy slot-swap) ----
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "🚀 [POC] deploy ${{ needs.build.outputs.version }} → DEV (slot swap, dummy)"
+
+  deploy-staging:
+    needs: [build, deploy-dev]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "🚀 [POC] deploy ${{ needs.build.outputs.version }} → STAGING (slot swap, dummy)"
+
+  # ---- RELEASE (real: semver git tag + GitHub Release) ----
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      semver: ${{ steps.ver.outputs.semver }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute next semver (Conventional Commits)
+        id: ver
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import subprocess, re
+          def sh(c): return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
+          last = sh('git describe --tags --abbrev=0 --match "v*" 2>/dev/null') or "v0.0.0"
+          rng = f"{last}..HEAD" if last != "v0.0.0" else "HEAD"
+          log = sh(f"git log {rng} --format=%B")
+          major = bool(re.search(r"BREAKING CHANGE|^\w+!:", log, re.M))
+          minor = bool(re.search(r"^feat", log, re.M))
+          m = re.match(r"v(\d+)\.(\d+)\.(\d+)", last); M, mi, pa = map(int, m.groups())
+          if major:   M, mi, pa = M + 1, 0, 0
+          elif minor: mi, pa = mi + 1, 0
+          else:       pa = pa + 1
+          print(f"semver=v{M}.{mi}.{pa}")
+          PY
+          echo "Next: $(tail -1 "$GITHUB_OUTPUT")"
+      - name: Tag + GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name  "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.semver }}" -m "Release ${{ steps.ver.outputs.semver }}"
+          git push origin "${{ steps.ver.outputs.semver }}"
+          gh release create "${{ steps.ver.outputs.semver }}" \
+            --title "$SERVICE ${{ steps.ver.outputs.semver }}" --generate-notes
+
+  # ---- BUMP STAGING LEDGER (real: cross-repo commit to platform-releases) ----
+  bump-staging-ledger:
+    needs: [build, deploy-staging, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup deploy key
+        env:
+          KEY: ${{ secrets.LEDGER_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Bump staging.json in platform-releases
+        run: |
+          git clone git@github.com:mbeema/platform-releases.git /tmp/rel
+          cd /tmp/rel
+          git config user.name  "ledger-bot"
+          git config user.email "ledger-bot@users.noreply.github.com"
+          python3 scripts/bump_ledger.py \
+            --file environments/staging.json \
+            --service "$SERVICE" \
+            --version "${{ needs.build.outputs.version }}" \
+            --semver "${{ needs.release.outputs.semver }}"
+          git add environments/staging.json
+          if git diff --cached --quiet; then echo "ledger already current"; exit 0; fi
+          git commit -m "chore(ledger): $SERVICE → ${{ needs.build.outputs.version }} in staging [skip ci]"
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep $(( (RANDOM % 5) + 2 ))
+          done
+          echo "push failed after retries"; exit 1
