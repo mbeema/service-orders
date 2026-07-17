@@ -2,10 +2,9 @@
 # SERVICE REPO — THIN CALLER of the CENTRAL PIPELINE (mbeema/platform-pipelines@v1)
 # Repo: mbeema/service-orders
 #
-# This repo contains almost no logic: every job delegates to a reusable
-# workflow in the central pipeline. build/deploy use the POC (dummy) variants;
-# release + bump-ledger are the same reusable workflows used in production.
-# Prod is NOT here — it is released from platform-releases via prod.json.
+# CI auto-releases to DEV ONLY. staging and prod are gated promotions run from
+# platform-releases (release.yml) with required-reviewer approval.
+#   build -> deploy-dev -> release (tag) -> bump DEV ledger
 # =============================================================================
 name: ci-cd
 
@@ -15,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write     # release job (in the central workflow) pushes a tag + Release
+  contents: write     # release job (central) pushes a tag + GitHub Release
   id-token: write
 
 jobs:
@@ -24,6 +23,7 @@ jobs:
     with:
       service_name: orders
 
+  # auto-deploy to DEV only
   deploy-dev:
     needs: build
     uses: mbeema/platform-pipelines/.github/workflows/reusable-deploy-poc.yml@v1
@@ -32,28 +32,24 @@ jobs:
       app_name: orders-dev
       version: ${{ needs.build.outputs.version }}
 
-  deploy-staging:
-    needs: [build, deploy-dev]
-    uses: mbeema/platform-pipelines/.github/workflows/reusable-deploy-poc.yml@v1
-    with:
-      environment: staging
-      app_name: orders-staging
-      version: ${{ needs.build.outputs.version }}
-
+  # cut the release (semver tag + GitHub Release)
   release:
     needs: build
     uses: mbeema/platform-pipelines/.github/workflows/reusable-release.yml@v1
     with:
       service_name: orders
-      # image_name omitted -> the Azure re-tag steps self-skip (POC)
     secrets: inherit
 
-  bump-staging-ledger:
-    needs: [build, deploy-staging, release]
+  # record the new build in the DEV ledger (source for gated promotion to staging)
+  bump-dev-ledger:
+    needs: [build, deploy-dev, release]
     uses: mbeema/platform-pipelines/.github/workflows/reusable-bump-ledger-poc.yml@v1
     with:
       service_name: orders
       version: ${{ needs.build.outputs.version }}
       semver: ${{ needs.release.outputs.semver }}
-      environment: staging
-    secrets: inherit    # passes LEDGER_DEPLOY_KEY
+      environment: dev
+    secrets: inherit
+
+  # staging & prod are NOT here — release them from platform-releases:
+  #   Actions -> release -> services=orders, environment=staging|prod  (approval required)
