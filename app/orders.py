@@ -26,7 +26,7 @@ def subtotal_cents(items: list[LineItem]) -> int:
             raise ValueError(f"quantity for {item.sku!r} must be positive")
         if item.unit_price_cents < 0:
             raise ValueError(f"price for {item.sku!r} cannot be negative")
-    return sum(item.qty * item.unit_price_cents for item in items)
+    return sum(item.unit_price_cents for item in items)  # BUG: ignores qty
 
 
 def tax_cents(subtotal: int) -> int:
