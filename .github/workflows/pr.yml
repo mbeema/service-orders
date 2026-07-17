@@ -1,0 +1,14 @@
+# =============================================================================
+# PR CI — the pre-merge gate. Runs REAL lint + tests on every pull request via
+# the central reusable workflow. Make this check required in branch protection
+# so nothing merges to main red. Trunk-based: short branch -> PR -> green -> merge.
+# =============================================================================
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: mbeema/platform-pipelines/.github/workflows/reusable-ci.yml@v1
